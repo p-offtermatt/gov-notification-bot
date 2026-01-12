@@ -1,0 +1,1 @@
+Read docs/plans/gov-notification-bot.md, then proceed to implement this. Validate as much as possible by yourself without asking for feedback. Test everything locally first as much as possible.

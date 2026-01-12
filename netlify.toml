@@ -1,0 +1,9 @@
+[build]
+  command = "echo 'No build required'"
+  publish = "."
+
+[functions]
+  directory = "netlify/functions"
+
+[functions."gov-vote-notify"]
+  schedule = "* * * * *"
