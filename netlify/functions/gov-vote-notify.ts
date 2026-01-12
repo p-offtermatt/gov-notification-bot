@@ -91,7 +91,15 @@ async function processProposal(
     // No existing data, start fresh
   }
 
+  // Calculate total staked tokens for percentage calculations
+  let totalStakedTokens = 0;
+  for (const validator of validators.values()) {
+    totalStakedTokens += validator.tokens;
+  }
+
   const newValidatorVotes: Array<{ vote: Vote; validator: ValidatorInfo }> = [];
+  const newWhaleVotes: Array<{ vote: Vote; votingPowerPct: number }> = [];
+
   for (const vote of votes) {
     if (!(vote.voter in seenVotes)) {
       // Mark as seen regardless of whether it's a validator
@@ -100,10 +108,16 @@ async function processProposal(
         timestamp: new Date().toISOString(),
       };
 
-      // Only notify for validator votes
+      // Check if it's a validator vote
       const validator = validatorByAccount.get(vote.voter);
       if (validator) {
         newValidatorVotes.push({ vote, validator });
+      } else {
+        // Check if it's a whale delegator (>0.05% VP)
+        const delegatorVP = await fetchDelegatorVotingPower(lcdUrl, vote.voter, totalStakedTokens);
+        if (delegatorVP >= 0.05) {
+          newWhaleVotes.push({ vote, votingPowerPct: delegatorVP });
+        }
       }
     }
   }
@@ -111,6 +125,11 @@ async function processProposal(
   // Notify for each new validator vote
   for (const { vote, validator } of newValidatorVotes) {
     await notifyVote(vote, proposalId, validator, slackWebhook);
+  }
+
+  // Notify for each new whale vote
+  for (const { vote, votingPowerPct } of newWhaleVotes) {
+    await notifyWhaleVote(vote, proposalId, votingPowerPct, slackWebhook);
   }
 
   // Persist updated seen votes
@@ -240,11 +259,13 @@ async function notifyVote(
   validator: ValidatorInfo,
   slackWebhook: string
 ): Promise<void> {
-  const option = formatVoteOption(vote.options?.[0]?.option || "UNKNOWN");
+  const rawOption = vote.options?.[0]?.option || "UNKNOWN";
+  const option = formatVoteOption(rawOption);
+  const emoji = getVoteEmoji(rawOption);
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
 
   const { moniker, votingPowerPct } = validator;
-  const message = `${moniker} (${votingPowerPct.toFixed(1)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
+  const message = `${emoji} ${moniker} (${votingPowerPct.toFixed(1)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
 
   const resp = await fetch(slackWebhook, {
     method: "POST",
@@ -266,6 +287,81 @@ function formatVoteOption(option: string): string {
     VOTE_OPTION_NO_WITH_VETO: "NoWithVeto",
   };
   return mapping[option] || option;
+}
+
+function getVoteEmoji(option: string): string {
+  switch (option) {
+    case "VOTE_OPTION_YES":
+      return "\u2705\u2705\u2705"; // Green checkmarks
+    case "VOTE_OPTION_NO":
+      return "\u{1F6A8}\u{1F6A8}\u{1F6A8}\u26A0\uFE0F\u26A0\uFE0F\u26A0\uFE0F\u{1F6A8}\u{1F6A8}\u{1F6A8}"; // Red sirens and warnings
+    case "VOTE_OPTION_ABSTAIN":
+      return "\u{1F7E4}\u{1F7E4}\u{1F7E4}"; // Gray circles
+    case "VOTE_OPTION_NO_WITH_VETO":
+      return "\u{1F6A8}\u{1F6A8}\u{1F6A8}\u26A0\uFE0F\u26A0\uFE0F\u26A0\uFE0F\u274C\u274C\u274C"; // Sirens, warnings, and X marks
+    default:
+      return "\u2753"; // Question mark
+  }
+}
+
+async function fetchDelegatorVotingPower(
+  lcdUrl: string,
+  delegatorAddress: string,
+  totalStakedTokens: number
+): Promise<number> {
+  try {
+    const url = new URL(`${lcdUrl}/cosmos/staking/v1beta1/delegations/${delegatorAddress}`);
+    const resp = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!resp.ok) {
+      return 0;
+    }
+
+    const data = await resp.json();
+    const delegations = data.delegation_responses || [];
+
+    let totalDelegated = 0;
+    for (const delegation of delegations) {
+      totalDelegated += parseInt(delegation.balance?.amount || "0", 10);
+    }
+
+    if (totalStakedTokens === 0) return 0;
+    return (totalDelegated / totalStakedTokens) * 100;
+  } catch {
+    return 0;
+  }
+}
+
+async function notifyWhaleVote(
+  vote: Vote,
+  proposalId: string,
+  votingPowerPct: number,
+  slackWebhook: string
+): Promise<void> {
+  const rawOption = vote.options?.[0]?.option || "UNKNOWN";
+  const option = formatVoteOption(rawOption);
+  const voteEmoji = getVoteEmoji(rawOption);
+  const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+
+  const whaleEmoji = "\u{1F433}\u{1F433}\u{1F433}"; // Whale emojis
+  const shortVoter = vote.voter.length > 20
+    ? `${vote.voter.slice(0, 12)}...${vote.voter.slice(-6)}`
+    : vote.voter;
+
+  const message = `${whaleEmoji} *WHALE ALERT* ${whaleEmoji}\n${voteEmoji} ${shortVoter} (${votingPowerPct.toFixed(2)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
+
+  const resp = await fetch(slackWebhook, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: message }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Failed to post to Slack: ${resp.status} ${resp.statusText}`);
+  }
 }
 
 async function postErrorToSlack(webhook: string, errorMessage: string): Promise<void> {
