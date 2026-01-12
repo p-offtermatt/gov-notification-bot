@@ -91,26 +91,32 @@ async function processProposal(
     // No existing data, start fresh
   }
 
-  const newVotes: Vote[] = [];
+  const newValidatorVotes: Array<{ vote: Vote; validator: ValidatorInfo }> = [];
   for (const vote of votes) {
     if (!(vote.voter in seenVotes)) {
-      newVotes.push(vote);
+      // Mark as seen regardless of whether it's a validator
       seenVotes[vote.voter] = {
         option: vote.options?.[0]?.option || "UNKNOWN",
         timestamp: new Date().toISOString(),
       };
+
+      // Only notify for validator votes
+      const validator = validatorByAccount.get(vote.voter);
+      if (validator) {
+        newValidatorVotes.push({ vote, validator });
+      }
     }
   }
 
-  // Notify for each new vote
-  for (const vote of newVotes) {
-    await notifyVote(vote, proposalId, validatorByAccount, slackWebhook);
+  // Notify for each new validator vote
+  for (const { vote, validator } of newValidatorVotes) {
+    await notifyVote(vote, proposalId, validator, slackWebhook);
   }
 
   // Persist updated seen votes
   await store.setJSON(seenKey, seenVotes);
 
-  return newVotes.length;
+  return newValidatorVotes.length;
 }
 
 async function fetchAllVotes(lcdUrl: string, proposalId: string): Promise<Vote[]> {
@@ -231,24 +237,14 @@ function buildAccountToValidatorMapping(
 async function notifyVote(
   vote: Vote,
   proposalId: string,
-  validatorByAccount: Map<string, ValidatorInfo>,
+  validator: ValidatorInfo,
   slackWebhook: string
 ): Promise<void> {
-  const voter = vote.voter;
   const option = formatVoteOption(vote.options?.[0]?.option || "UNKNOWN");
   const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
 
-  const validatorInfo = validatorByAccount.get(voter);
-  let message: string;
-
-  if (validatorInfo) {
-    const { moniker, votingPowerPct } = validatorInfo;
-    message = `${moniker} (${votingPowerPct.toFixed(1)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
-  } else {
-    const shortVoter =
-      voter.length > 20 ? `${voter.slice(0, 12)}...${voter.slice(-6)}` : voter;
-    message = `${shortVoter} votes ${option} on proposal ${proposalId} at ${timestamp}`;
-  }
+  const { moniker, votingPowerPct } = validator;
+  const message = `${moniker} (${votingPowerPct.toFixed(1)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
 
   const resp = await fetch(slackWebhook, {
     method: "POST",
