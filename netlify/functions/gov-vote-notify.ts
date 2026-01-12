@@ -79,13 +79,13 @@ async function processProposal(
   // Build mapping from account addresses to validator info
   const validatorByAccount = buildAccountToValidatorMapping(validators);
 
-  // Load previously seen votes
+  // Load previously seen votes with strong consistency to avoid duplicates
   const seenKey = `seen_votes_${proposalId}`;
   let seenVotes: SeenVotes = {};
   try {
-    const seenData = await store.get(seenKey);
+    const seenData = await store.get(seenKey, { type: "json", consistency: "strong" }) as SeenVotes | null;
     if (seenData) {
-      seenVotes = JSON.parse(seenData);
+      seenVotes = seenData;
     }
   } catch {
     // No existing data, start fresh
@@ -108,7 +108,7 @@ async function processProposal(
   }
 
   // Persist updated seen votes
-  await store.set(seenKey, JSON.stringify(seenVotes));
+  await store.setJSON(seenKey, seenVotes);
 
   return newVotes.length;
 }
