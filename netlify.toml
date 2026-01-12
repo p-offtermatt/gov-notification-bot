@@ -1,9 +1,7 @@
 [build]
-  command = "echo 'No build required'"
+  command = "npm install"
   publish = "."
 
 [functions]
   directory = "netlify/functions"
-
-[functions."gov-vote-notify"]
-  schedule = "* * * * *"
+  node_bundler = "esbuild"

@@ -1,16 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-ENV/
+# Dependencies
+node_modules/
 
-# Local testing storage
-netlify/functions/gov-vote-notify/.store/
+# Build output
+dist/
 
 # Environment variables
 .env
+.env.local
+
+# Netlify
+.netlify/
 
 # IDE
 .idea/
@@ -21,3 +20,7 @@ netlify/functions/gov-vote-notify/.store/
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

@@ -1,0 +1,21 @@
+{
+  "name": "gov-notification-bot",
+  "version": "1.0.0",
+  "description": "Cosmos Hub governance vote notification bot for Slack",
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "@netlify/functions": "^3.0.0",
+    "bech32": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "netlify-cli": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}
