@@ -7,14 +7,6 @@ interface Vote {
   options: Array<{ option: string; weight: string }>;
 }
 
-interface Validator {
-  operator_address: string;
-  tokens: string;
-  description: {
-    moniker: string;
-  };
-}
-
 interface ValidatorInfo {
   moniker: string;
   tokens: number;
@@ -99,16 +91,15 @@ async function processProposal(
 
   const newValidatorVotes: Array<{ vote: Vote; validator: ValidatorInfo }> = [];
   const newWhaleVotes: Array<{ vote: Vote; votingPowerPct: number }> = [];
+  const changedValidatorVotes: Array<{ vote: Vote; validator: ValidatorInfo; previousOption: string }> = [];
+  const changedWhaleVotes: Array<{ vote: Vote; votingPowerPct: number; previousOption: string }> = [];
 
   for (const vote of votes) {
-    if (!(vote.voter in seenVotes)) {
-      // Mark as seen regardless of whether it's a validator
-      seenVotes[vote.voter] = {
-        option: vote.options?.[0]?.option || "UNKNOWN",
-        timestamp: new Date().toISOString(),
-      };
+    const currentOption = vote.options?.[0]?.option || "UNKNOWN";
+    const previousVote = seenVotes[vote.voter];
 
-      // Check if it's a validator vote
+    if (!previousVote) {
+      // New vote - check if it's a validator or whale
       const validator = validatorByAccount.get(vote.voter);
       if (validator) {
         newValidatorVotes.push({ vote, validator });
@@ -119,6 +110,30 @@ async function processProposal(
           newWhaleVotes.push({ vote, votingPowerPct: delegatorVP });
         }
       }
+
+      // Mark as seen
+      seenVotes[vote.voter] = {
+        option: currentOption,
+        timestamp: new Date().toISOString(),
+      };
+    } else if (previousVote.option !== currentOption) {
+      // Vote changed - check if it's a validator or whale we care about
+      const validator = validatorByAccount.get(vote.voter);
+      if (validator) {
+        changedValidatorVotes.push({ vote, validator, previousOption: previousVote.option });
+      } else {
+        // Check if it's a whale delegator (>0.05% VP)
+        const delegatorVP = await fetchDelegatorVotingPower(lcdUrl, vote.voter, totalStakedTokens);
+        if (delegatorVP >= 0.05) {
+          changedWhaleVotes.push({ vote, votingPowerPct: delegatorVP, previousOption: previousVote.option });
+        }
+      }
+
+      // Update the seen vote
+      seenVotes[vote.voter] = {
+        option: currentOption,
+        timestamp: new Date().toISOString(),
+      };
     }
   }
 
@@ -130,6 +145,19 @@ async function processProposal(
   // Notify for each new whale vote
   for (const { vote, votingPowerPct } of newWhaleVotes) {
     await notifyWhaleVote(vote, proposalId, votingPowerPct, slackWebhook);
+  }
+
+  // Notify for changed validator votes
+  for (const { vote, validator, previousOption } of changedValidatorVotes) {
+    await notifyVoteChange(vote, proposalId, validator.moniker, validator.votingPowerPct, previousOption, slackWebhook);
+  }
+
+  // Notify for changed whale votes
+  for (const { vote, votingPowerPct, previousOption } of changedWhaleVotes) {
+    const shortVoter = vote.voter.length > 20
+      ? `${vote.voter.slice(0, 12)}...${vote.voter.slice(-6)}`
+      : vote.voter;
+    await notifyVoteChange(vote, proposalId, shortVoter, votingPowerPct, previousOption, slackWebhook, true);
   }
 
   // Persist updated seen votes
@@ -351,6 +379,38 @@ async function notifyWhaleVote(
     : vote.voter;
 
   const message = `${whaleEmoji} *WHALE ALERT* ${whaleEmoji}\n${voteEmoji} ${shortVoter} (${votingPowerPct.toFixed(2)}% VP) votes ${option} on proposal ${proposalId} at ${timestamp}`;
+
+  const resp = await fetch(slackWebhook, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: message }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Failed to post to Slack: ${resp.status} ${resp.statusText}`);
+  }
+}
+
+async function notifyVoteChange(
+  vote: Vote,
+  proposalId: string,
+  voterName: string,
+  votingPowerPct: number,
+  previousOption: string,
+  slackWebhook: string,
+  isWhale: boolean = false
+): Promise<void> {
+  const currentOption = vote.options?.[0]?.option || "UNKNOWN";
+  const previousFormatted = formatVoteOption(previousOption);
+  const currentFormatted = formatVoteOption(currentOption);
+  const emoji = getVoteEmoji(currentOption);
+  const timestamp = new Date().toISOString().replace("T", " ").slice(0, 16) + " UTC";
+
+  const changeEmoji = "\u{1F504}\u{1F504}\u{1F504}"; // Rotating arrows
+  const whalePrefix = isWhale ? "\u{1F433}\u{1F433}\u{1F433} *WHALE* " : "";
+
+  const message = `${changeEmoji} *VOTE CHANGE: ${previousFormatted} \u2192 ${currentFormatted}* ${changeEmoji}\n${whalePrefix}${emoji} ${voterName} (${votingPowerPct.toFixed(isWhale ? 2 : 1)}% VP) changed vote on proposal ${proposalId} at ${timestamp}`;
 
   const resp = await fetch(slackWebhook, {
     method: "POST",
